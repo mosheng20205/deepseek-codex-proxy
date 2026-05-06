@@ -6,6 +6,7 @@ import time
 import uuid
 
 from collections.abc import AsyncGenerator
+from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -15,7 +16,7 @@ from starlette.background import BackgroundTask
 app = FastAPI()
 
 # Shared httpx client for connection reuse (avoids TCP/TLS handshake per request)
-_http_client: httpx.AsyncClient | None = None
+_http_client: Optional[httpx.AsyncClient] = None
 
 
 async def _get_client() -> httpx.AsyncClient:
@@ -148,6 +149,205 @@ def _repair_tool_message_chain(messages: list[dict]) -> list[dict]:
             repaired.append({"role": "assistant", "content": content})
 
     return repaired
+
+
+def _parse_json_object(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _custom_input_from_arguments(arguments: str) -> str:
+    parsed = _parse_json_object(arguments)
+    if "input" not in parsed:
+        return arguments or ""
+    value = parsed.get("input", "")
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _shell_action_from_arguments(arguments: str) -> dict:
+    parsed = _parse_json_object(arguments)
+    action = parsed.get("action")
+    if isinstance(action, dict):
+        return action
+
+    commands = parsed.get("commands")
+    if commands is None:
+        command = parsed.get("command", "")
+        if isinstance(command, list):
+            commands = [" ".join(str(part) for part in command)]
+        elif command:
+            commands = [str(command)]
+        else:
+            commands = []
+
+    result = {"commands": commands if isinstance(commands, list) else [str(commands)]}
+    for key in ("timeout_ms", "max_output_length"):
+        if key in parsed:
+            result[key] = parsed[key]
+    return result
+
+
+def _local_shell_action_from_arguments(arguments: str) -> dict:
+    parsed = _parse_json_object(arguments)
+    action = parsed.get("action")
+    if isinstance(action, dict):
+        return action
+
+    command = parsed.get("command", parsed.get("commands", []))
+    if isinstance(command, str):
+        command = [command]
+    result = {
+        "type": "exec",
+        "command": command if isinstance(command, list) else [],
+        "env": parsed.get("env", {}),
+    }
+    if parsed.get("working_directory") or parsed.get("workdir"):
+        result["working_directory"] = parsed.get("working_directory") or parsed.get("workdir")
+    if parsed.get("timeout_ms"):
+        result["timeout_ms"] = parsed["timeout_ms"]
+    return result
+
+
+def _apply_patch_operation_from_arguments(arguments: str) -> dict:
+    parsed = _parse_json_object(arguments)
+    operation = parsed.get("operation")
+    if isinstance(operation, dict):
+        return operation
+    if parsed.get("type") in {"create_file", "delete_file", "update_file"}:
+        return parsed
+    return {
+        "type": parsed.get("type", "update_file"),
+        "path": parsed.get("path", ""),
+        "diff": parsed.get("diff") or parsed.get("input") or arguments or "",
+    }
+
+
+def _response_tool_item(
+    output_type: str,
+    item_id: str,
+    call_id: str,
+    name: str,
+    arguments: str,
+    status: str,
+) -> dict:
+    if output_type == "custom_tool_call":
+        return {
+            "id": item_id,
+            "type": "custom_tool_call",
+            "call_id": call_id,
+            "name": name,
+            "input": _custom_input_from_arguments(arguments),
+            "status": status,
+        }
+    if output_type == "shell_call":
+        return {
+            "id": item_id,
+            "type": "shell_call",
+            "call_id": call_id,
+            "action": _shell_action_from_arguments(arguments),
+            "status": status,
+        }
+    if output_type == "local_shell_call":
+        return {
+            "id": item_id,
+            "type": "local_shell_call",
+            "call_id": call_id,
+            "action": _local_shell_action_from_arguments(arguments),
+            "status": status,
+        }
+    if output_type == "apply_patch_call":
+        return {
+            "id": item_id,
+            "type": "apply_patch_call",
+            "call_id": call_id,
+            "operation": _apply_patch_operation_from_arguments(arguments),
+            "status": status,
+        }
+    return {
+        "id": item_id,
+        "type": "function_call",
+        "call_id": call_id,
+        "name": name,
+        "arguments": arguments,
+        "status": status,
+    }
+
+
+def _chat_tool_for_custom(tool: dict) -> dict:
+    description = tool.get("description", "")
+    tool_format = tool.get("format")
+    if tool_format:
+        description = f"{description}\n\nOriginal Responses custom tool format: {json.dumps(tool_format, ensure_ascii=False)}"
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.get("name", ""),
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": "Raw input for this custom/freeform Responses tool.",
+                    },
+                },
+                "required": ["input"],
+            },
+        },
+    }
+
+
+def _chat_tool_for_shell() -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "shell",
+            "description": "Run one or more shell commands. Provide commands as strings.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "commands": {"type": "array", "items": {"type": "string"}},
+                    "timeout_ms": {"type": "integer"},
+                    "max_output_length": {"type": "integer"},
+                },
+                "required": ["commands"],
+            },
+        },
+    }
+
+
+def _chat_tool_for_apply_patch() -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "apply_patch",
+            "description": "Create, delete, or update one file using an apply_patch operation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["create_file", "delete_file", "update_file"]},
+                            "path": {"type": "string"},
+                            "diff": {"type": "string"},
+                        },
+                        "required": ["type", "path"],
+                    },
+                },
+                "required": ["operation"],
+            },
+        },
+    }
 
 
 # ============================================================
@@ -342,7 +542,7 @@ class AnthropicStreamTranslator:
         self._started = False
         self._finished = False
         self._content_idx = -1
-        self._block_type: str | None = None  # 'thinking' | 'text'
+        self._block_type: Optional[str] = None  # 'thinking' | 'text'
 
     @property
     def finished(self) -> bool:
@@ -905,20 +1105,25 @@ async def _parse_sse_stream(upstream) -> "AsyncGenerator[dict, None]":
 @app.api_route("/v1/models", methods=["GET", "OPTIONS"])
 async def list_models():
     """Return supported models list with metadata Codex needs."""
+    configured_model = normalize_model(TARGET_MODEL)
     return {
         "object": "list",
         "data": [
             {
-                "id": "deepseek-v4-pro",
+                "id": "deepseek-v4-pro[1m]",
                 "object": "model",
                 "created": 1735689600,
                 "owned_by": "deepseek",
+                "context_window": 1048576,
+                "max_output_tokens": 32768,
             },
             {
-                "id": "deepseek-v4-flash",
+                "id": "deepseek-v4-flash[1m]",
                 "object": "model",
                 "created": 1735689600,
                 "owned_by": "deepseek",
+                "context_window": 1048576,
+                "max_output_tokens": 32768,
             },
         ],
     }
@@ -933,6 +1138,8 @@ async def get_model(model_id: str):
         "object": "model",
         "created": 1735689600,
         "owned_by": "deepseek",
+        "context_window": 1048576,
+        "max_output_tokens": 32768,
     }
 
 
