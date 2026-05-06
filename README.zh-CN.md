@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <a href="README.md">English</a> |
   <a href="README.zh-CN.md">简体中文</a>
 </p>
@@ -123,6 +123,12 @@ trust_level = "trusted"
 - 出现 `Port 127.0.0.1:3000 is already in use`：请停止占用该端口的进程，或复用已经运行的代理。
 - Codex 无法连接：请先启动代理，再运行 `codex -p deepseek_v4`。
 - DeepSeek 返回错误：代理会把上游状态码和错误内容原样传给 Codex，便于排查。
+
+
+
+![运行中的代理](run.png)
+
+![代理配合 Codex](run2.png)
 
 ## 本地快速检查
 

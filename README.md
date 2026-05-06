@@ -1,6 +1,6 @@
 <p align="center">
   <a href="README.md">English</a> |
-  <a href="README.zh-CN.md">简体中文</a>
+  <a href="README.zh-CN.md">简体中�?/a>
 </p>
 
 # DeepSeek Proxy for Codex
@@ -83,7 +83,7 @@ codex -p deepseek_v4
 Run a one-shot check:
 
 ```powershell
-codex -p deepseek_v4 exec "只回答 2"
+codex -p deepseek_v4 exec "只回�?2"
 ```
 
 The profile points Codex at:
@@ -133,6 +133,10 @@ trust_level = "trusted"
 - Codex cannot connect: start the proxy first, then run `codex -p deepseek_v4`.
 - DeepSeek returns an error: the proxy passes the upstream status code and body through to Codex.
 
+
+![Running proxy](run.png)
+
+![Proxy with Codex](run2.png)
 ## Quick Local Checks
 
 List models:
@@ -146,7 +150,7 @@ Call Responses directly:
 ```powershell
 $body = @{
   model = "deepseek-v4-pro"
-  input = @(@{ role = "user"; content = @(@{ type = "input_text"; text = "只回答 OK" }) })
+  input = @(@{ role = "user"; content = @(@{ type = "input_text"; text = "只回�?OK" }) })
   stream = $false
   max_output_tokens = 16
 } | ConvertTo-Json -Depth 8
