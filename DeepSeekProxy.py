@@ -14,6 +14,19 @@ from starlette.background import BackgroundTask
 
 app = FastAPI()
 
+# Shared httpx client for connection reuse (avoids TCP/TLS handshake per request)
+_http_client: httpx.AsyncClient | None = None
+
+
+async def _get_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(180.0),
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
+        )
+    return _http_client
+
 
 def _get_env(key: str, default: str = "") -> str:
     """Read env var, falling back to Windows registry (HKCU, then HKLM)."""
@@ -955,7 +968,7 @@ async def proxy(request: Request, path: str):
             "content-type": "application/json",
         }
 
-        client = httpx.AsyncClient(timeout=httpx.Timeout(180.0))
+        client = await _get_client()
         try:
             upstream = await client.send(
                 client.build_request(
@@ -965,12 +978,10 @@ async def proxy(request: Request, path: str):
                 stream=True,
             )
         except httpx.RequestError as e:
-            await client.aclose()
             raise HTTPException(status_code=502, detail=f"Upstream Error: {str(e)}")
 
         async def _cleanup():
             await upstream.aclose()
-            await client.aclose()
 
         if is_stream:
             async def _anthropic_stream():
@@ -1029,7 +1040,7 @@ async def proxy(request: Request, path: str):
             "content-type": "application/json",
         }
 
-        client = httpx.AsyncClient(timeout=httpx.Timeout(180.0))
+        client = await _get_client()
         try:
             upstream = await client.send(
                 client.build_request(
@@ -1039,12 +1050,10 @@ async def proxy(request: Request, path: str):
                 stream=True,
             )
         except httpx.RequestError as e:
-            await client.aclose()
             raise HTTPException(status_code=502, detail=f"Upstream Error: {str(e)}")
 
         async def _cleanup2():
             await upstream.aclose()
-            await client.aclose()
 
         if is_stream:
             if upstream.status_code >= 400:
@@ -1120,7 +1129,7 @@ async def proxy(request: Request, path: str):
     elif content:
         body = content
 
-    client = httpx.AsyncClient(timeout=httpx.Timeout(180.0))
+    client = await _get_client()
     req = client.build_request(
         method=request.method, url=url, headers=req_headers,
         content=body, params=request.query_params,
@@ -1128,12 +1137,10 @@ async def proxy(request: Request, path: str):
     try:
         upstream = await client.send(req, stream=True)
     except httpx.RequestError as e:
-        await client.aclose()
         raise HTTPException(status_code=502, detail=f"Upstream Error: {str(e)}")
 
     async def _cleanup3():
         await upstream.aclose()
-        await client.aclose()
 
     return StreamingResponse(
         upstream.aiter_raw(),
