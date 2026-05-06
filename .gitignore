@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+server.log
+
+# Environment (keep example, not real keys)
+.env
+# Debug request captures (large files with system prompts)
+chat_request.json
+codex_request.json
+
+# IDE / CLI local settings
+.claude/
+
+# Temporary test files
+_test_server.py
